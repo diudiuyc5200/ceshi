@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 /* LZ4 Kernel Interface
  *
  * Copyright (C) 2013, LG Electronics, Kyungsik Lee <kyungsik.lee@lge.com>
@@ -646,3 +647,6 @@ int LZ4_decompress_fast_usingDict(const char *source, char *dest,
 	int originalSize, const char *dictStart, int dictSize);
 
 #endif
+=======
+../../lib/lz4/lz4.h
+>>>>>>> 797a046031f0 (lz4: import v1.10.0 from upstream)
