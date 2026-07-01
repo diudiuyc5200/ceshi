@@ -224,6 +224,8 @@ struct dsi_panel {
 
 	struct dsi_parser_utils utils;
 
+	int hbm_mode;
+
 	bool lp11_init;
 	bool ulps_feature_enabled;
 	bool ulps_suspend_enabled;
@@ -305,6 +307,9 @@ struct dsi_panel {
 	struct dsi_read_config xy_coordinate_cmds;
 	struct dsi_read_config max_luminance_cmds;
 	struct lockdowninfo_cfg lockdowninfo_read;
+#ifdef CONFIG_DRM_SDE_EXPO
+	bool dimlayer_exposure;
+#endif
 };
 
 static inline bool dsi_panel_ulps_feature_enabled(struct dsi_panel *panel)
@@ -443,5 +448,7 @@ ssize_t dsi_panel_mipi_reg_read(struct dsi_panel *panel,
 
 void dsi_panel_calc_dsi_transfer_time(struct dsi_host_common_cfg *config,
 		struct dsi_display_mode *mode, u32 frame_threshold_us);
+
+int dsi_panel_apply_hbm_mode(struct dsi_panel *panel);
 
 #endif /* _DSI_PANEL_H_ */

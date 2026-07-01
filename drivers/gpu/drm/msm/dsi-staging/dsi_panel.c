@@ -1,4 +1,3 @@
-
 /*
  * Copyright (c) 2016-2020, The Linux Foundation. All rights reserved.
  * Copyright (C) 2021 XiaoMi, Inc.
@@ -26,6 +25,10 @@
 #include "dsi_display.h"
 #include "dsi_ctrl_hw.h"
 #include "dsi_parser.h"
+
+#ifdef CONFIG_EXPOSURE_ADJUSTMENT
+#include "exposure_adjustment.h"
+#endif
 
 #include <linux/fs.h>
 #include <asm/uaccess.h>
@@ -149,7 +152,7 @@ int dsi_dsc_create_pps_buf_cmd(struct msm_display_dsc_info *dsc, char *buf,
 	*bp++ = 1;
 	*bp++ = 0;
 	*bp++ = 0;
-	*bp++ = 10;
+	*bp++ = dsc->pps_delay_ms;
 	*bp++ = 0;
 	*bp++ = 128;
 
@@ -829,6 +832,7 @@ ssize_t dsi_panel_get_doze_backlight(struct dsi_display *display, char *buf)
 int dsi_panel_set_backlight(struct dsi_panel *panel, u32 bl_lvl)
 {
 	int rc = 0;
+	int bl_dc_min = panel->bl_config.bl_min_level * 2;
 	u32 bl_temp = 0;
 	struct dsi_backlight_config *bl = &panel->bl_config;
 
@@ -837,7 +841,11 @@ int dsi_panel_set_backlight(struct dsi_panel *panel, u32 bl_lvl)
 
 	pr_debug("backlight type:%d lvl:%d\n", bl->type, bl_lvl);
 
-
+#ifdef CONFIG_EXPOSURE_ADJUSTMENT
+	if (bl_lvl > 0)
+		bl_lvl = ea_panel_calc_backlight(bl_lvl < bl_dc_min ? bl_dc_min : bl_lvl);
+#endif
+	
 	if (0 == bl_lvl){
 		if(panel->fod_dimlayer_hbm_enabled){
 			pr_info("skip set backlight=0 bacase fod_dimlayer_hbm_enabled enable");
@@ -1037,9 +1045,6 @@ error:
 	return rc;
 }
 
-static unsigned int framerate_override;
-module_param(framerate_override, uint, 0444);
-
 static int dsi_panel_parse_timing(struct dsi_mode_info *mode,
 				  struct dsi_parser_utils *utils)
 {
@@ -1062,22 +1067,6 @@ static int dsi_panel_parse_timing(struct dsi_mode_info *mode,
 	}
 
 	mode->clk_rate_hz = !rc ? tmp64 : 0;
-	if (tmp64 == 1100000000 || tmp64 == 1103000000) {
-        if (framerate_override == 7)
-			mode->clk_rate_hz = 1650000000; // 90hz
-		else if (framerate_override == 6)
-			mode->clk_rate_hz = 1540000000; // 84hz
-		else if (framerate_override == 5)
-			mode->clk_rate_hz = 1485000000; // 81hz
-		else if (framerate_override == 4)
-			mode->clk_rate_hz = 1375000000; // 75hz
-		else if (framerate_override == 3)
-			mode->clk_rate_hz = 1320000000; // 72hz
-		else if (framerate_override == 2)
-			mode->clk_rate_hz = 1265000000; // 69hz
-		else if (framerate_override == 1)
-			mode->clk_rate_hz = 1210000000; // 66hz
-	}
 	display_mode->priv_info->clk_rate_hz = mode->clk_rate_hz;
 
 	rc = utils->read_u32(utils->data, "qcom,mdss-mdp-transfer-time-us",
@@ -1101,22 +1090,6 @@ static int dsi_panel_parse_timing(struct dsi_mode_info *mode,
 		       rc);
 		goto error;
 	}
-	if (mode->refresh_rate == 60) {
-        if (framerate_override == 7)
-			mode->refresh_rate = 90;
-		else if (framerate_override == 6)
-			mode->refresh_rate = 84;
-		else if (framerate_override == 5)
-			mode->refresh_rate = 81;
-		else if (framerate_override == 4)
-			mode->refresh_rate = 75;
-		else if (framerate_override == 3)
-			mode->refresh_rate = 72;
-		else if (framerate_override == 2)
-			mode->refresh_rate = 69;
-		else if (framerate_override == 1)
-			mode->refresh_rate = 66;
-	}
 
 	rc = utils->read_u32(utils->data, "qcom,mdss-dsi-panel-width",
 				  &mode->h_active);
@@ -1133,8 +1106,6 @@ static int dsi_panel_parse_timing(struct dsi_mode_info *mode,
 		       rc);
 		goto error;
 	}
-	if (framerate_override)
-		mode->h_front_porch = 32;
 
 	rc = utils->read_u32(utils->data,
 				"qcom,mdss-dsi-h-back-porch",
@@ -1144,8 +1115,6 @@ static int dsi_panel_parse_timing(struct dsi_mode_info *mode,
 		       rc);
 		goto error;
 	}
-	if (framerate_override)
-		mode->h_back_porch = 16;
 
 	rc = utils->read_u32(utils->data,
 				"qcom,mdss-dsi-h-pulse-width",
@@ -1155,8 +1124,6 @@ static int dsi_panel_parse_timing(struct dsi_mode_info *mode,
 		       rc);
 		goto error;
 	}
-	if (framerate_override)
-		mode->h_sync_width = 16;
 
 	rc = utils->read_u32(utils->data, "qcom,mdss-dsi-h-sync-skew",
 				  &mode->h_skew);
@@ -1182,8 +1149,6 @@ static int dsi_panel_parse_timing(struct dsi_mode_info *mode,
 		       rc);
 		goto error;
 	}
-	if (framerate_override)
-		mode->v_back_porch = 16;
 
 	rc = utils->read_u32(utils->data, "qcom,mdss-dsi-v-front-porch",
 				  &mode->v_front_porch);
@@ -1192,8 +1157,6 @@ static int dsi_panel_parse_timing(struct dsi_mode_info *mode,
 		       rc);
 		goto error;
 	}
-	if (framerate_override)
-		mode->v_front_porch = 8;
 
 	rc = utils->read_u32(utils->data, "qcom,mdss-dsi-v-pulse-width",
 				  &mode->v_sync_width);
@@ -1202,8 +1165,6 @@ static int dsi_panel_parse_timing(struct dsi_mode_info *mode,
 		       rc);
 		goto error;
 	}
-	if (framerate_override)
-		mode->v_sync_width = 8;
 	pr_debug("panel vert active:%d front_portch:%d back_porch:%d pulse_width:%d\n",
 		mode->v_active, mode->v_front_porch, mode->v_back_porch,
 		mode->v_sync_width);
@@ -3093,6 +3054,13 @@ static int dsi_panel_parse_dsc_params(struct dsi_display_mode *mode,
 	}
 	priv_info->dsc.bpc = data;
 
+	rc = utils->read_u32(utils->data, "qcom,mdss-pps-delay-ms", &data);
+	if (rc) {
+		pr_debug("pps-delay-ms not specified, defaulting to 0\n");
+		priv_info->dsc.pps_delay_ms = 0;
+	}
+	priv_info->dsc.pps_delay_ms = data;
+
 	rc = utils->read_u32(utils->data, "qcom,mdss-dsc-bit-per-pixel",
 			&data);
 	if (rc) {
@@ -4203,6 +4171,47 @@ error:
 	return rc;
 }
 
+#ifdef CONFIG_EXPOSURE_ADJUSTMENT
+static struct dsi_panel * set_panel;
+static ssize_t mdss_fb_set_ea_enable(struct device *dev,
+	struct device_attribute *attr, const char *buf, size_t len)
+{
+	u32 ea_enable;
+
+	if (sscanf(buf, "%d", &ea_enable) != 1) {
+		pr_err("sccanf buf error!\n");
+		return len;
+	}
+
+	ea_panel_mode_ctrl(set_panel, ea_enable != 0);
+
+	return len;
+}
+
+static ssize_t mdss_fb_get_ea_enable(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	int ret;
+	bool ea_enable = ea_panel_is_enabled();
+
+	ret = scnprintf(buf, PAGE_SIZE, "%d\n", ea_enable ? 1 : 0);
+
+	return ret;
+}
+
+static DEVICE_ATTR(msm_fb_ea_enable, S_IRUGO | S_IWUSR,
+	mdss_fb_get_ea_enable, mdss_fb_set_ea_enable);
+
+static struct attribute *mdss_fb_attrs[] = {
+	&dev_attr_msm_fb_ea_enable.attr,
+	NULL,
+};
+
+static struct attribute_group mdss_fb_attr_group = {
+	.attrs = mdss_fb_attrs,
+};
+#endif
+
 int dsi_panel_drv_init(struct dsi_panel *panel,
 		       struct mipi_dsi_host *host)
 {
@@ -4256,6 +4265,13 @@ int dsi_panel_drv_init(struct dsi_panel *panel,
 		goto error_gpio_release;
 	}
 
+	#ifdef CONFIG_EXPOSURE_ADJUSTMENT
+	rc = sysfs_create_group(&(panel->parent->kobj), &mdss_fb_attr_group);
+	if (rc)
+		pr_err("sysfs group creation failed, rc=%d\n", rc);
+	set_panel = panel;
+#endif
+	
 	goto exit;
 
 error_gpio_release:
@@ -5671,6 +5687,9 @@ int dsi_panel_enable(struct dsi_panel *panel)
 	else
 		panel->panel_initialized = true;
 
+	if (panel->hbm_mode)
+		dsi_panel_apply_hbm_mode(panel);
+
 	panel->fod_hbm_enabled = false;
 	panel->fod_dimlayer_hbm_enabled = false;
 	panel->in_aod = false;
@@ -5886,6 +5905,29 @@ int dsi_panel_post_unprepare(struct dsi_panel *panel)
 	}
 error:
 	mutex_unlock(&panel->panel_lock);
+	return rc;
+}
+
+int dsi_panel_apply_hbm_mode(struct dsi_panel *panel)
+{
+	static const enum dsi_cmd_set_type type_map[] = {
+		DSI_CMD_SET_DISP_HBM_FOD_OFF,
+		DSI_CMD_SET_DISP_HBM_FOD_ON
+	};
+
+	enum dsi_cmd_set_type type;
+	int rc;
+
+	if (panel->hbm_mode >= 0 &&
+		panel->hbm_mode < ARRAY_SIZE(type_map))
+		type = type_map[panel->hbm_mode];
+	else
+		type = DSI_CMD_SET_DISP_HBM_FOD_OFF;
+
+	mutex_lock(&panel->panel_lock);
+	rc = dsi_panel_tx_cmd_set(panel, type);
+	mutex_unlock(&panel->panel_lock);
+
 	return rc;
 }
 

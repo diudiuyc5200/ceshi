@@ -36,6 +36,10 @@
 #include "dsi_parser.h"
 #include "dsi_phy.h"
 
+#ifdef CONFIG_DRM_SDE_EXPO
+#include "sde_expo_dim_layer.h"
+#endif
+
 #define to_dsi_display(x) container_of(x, struct dsi_display, host)
 #define to_dsi_bridge(x)     container_of((x), struct dsi_bridge, base)
 #define INT_BASE_10 10
@@ -63,9 +67,10 @@ static const struct of_device_id dsi_display_dt_match[] = {
 	{}
 };
 
+struct dsi_display *primary_display;
+
 static unsigned int cur_refresh_rate = 60;
 
-struct dsi_display *primary_display;
 struct dsi_display *get_primary_display(void)
 {
 	return primary_display;
@@ -240,11 +245,17 @@ int dsi_display_set_backlight(struct drm_connector *connector,
 		goto error;
 	}
 
+	#ifdef CONFIG_DRM_SDE_EXPO
+	if(panel->dimlayer_exposure) {
+		bl_temp = expo_map_dim_level((u32)bl_temp, dsi_display);
+	}
+#endif
+	
 	rc = dsi_panel_set_backlight(panel, (u32)bl_temp);
 	if (rc)
 		pr_err("unable to set backlight\n");
 	else
-		pr_info("set backlight successfully at: bl_scale = %u, bl_scale_ad = %u, bl_lvl = %u\n", bl_scale, bl_scale_ad, (u32)bl_temp);
+		pr_debug("set backlight successfully at: bl_scale = %u, bl_scale_ad = %u, bl_lvl = %u\n", bl_scale, bl_scale_ad, (u32)bl_temp);
 
 	rc = dsi_display_clk_ctrl(dsi_display->dsi_clk_handle,
 			DSI_CORE_CLK, DSI_CLK_OFF);
@@ -5215,6 +5226,135 @@ error:
 	return rc;
 }
 
+static ssize_t sysfs_hbm_read(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct dsi_display *display = dev_get_drvdata(dev);
+	if (!display->panel)
+		return 0;
+
+	return scnprintf(buf, PAGE_SIZE, "%d\n", display->panel->hbm_mode);
+}
+
+static ssize_t sysfs_hbm_write(struct device *dev,
+	    struct device_attribute *attr, const char *buf, size_t count)
+{
+	struct dsi_display *display = dev_get_drvdata(dev);
+	int ret, hbm_mode;
+
+	if (!display->panel)
+		return -EINVAL;
+
+	ret = kstrtoint(buf, 10, &hbm_mode);
+	if (ret) {
+		pr_err("kstrtoint failed. ret=%d\n", ret);
+		return ret;
+	}
+
+	mutex_lock(&display->display_lock);
+
+	display->panel->hbm_mode = hbm_mode;
+	if (!dsi_panel_initialized(display->panel))
+		goto error;
+
+	ret = dsi_display_clk_ctrl(display->dsi_clk_handle,
+			DSI_CORE_CLK, DSI_CLK_ON);
+	if (ret) {
+		pr_err("[%s] failed to enable DSI core clocks, rc=%d\n",
+		       display->name, ret);
+		goto error;
+	}
+
+	ret = dsi_panel_apply_hbm_mode(display->panel);
+	if (ret)
+		pr_err("unable to set hbm mode\n");
+
+	ret = dsi_display_clk_ctrl(display->dsi_clk_handle,
+			DSI_CORE_CLK, DSI_CLK_OFF);
+	if (ret) {
+		pr_err("[%s] failed to disable DSI core clocks, rc=%d\n",
+		       display->name, ret);
+		goto error;
+	}
+error:
+	mutex_unlock(&display->display_lock);
+	return ret == 0 ? count : ret;
+}
+
+static DEVICE_ATTR(hbm, 0644,
+			sysfs_hbm_read,
+			sysfs_hbm_write);
+
+#ifdef CONFIG_DRM_SDE_EXPO
+static ssize_t sysfs_dimlayer_exposure_read(struct device *dev,
+	struct device_attribute *attr, char *buf)
+{
+	struct dsi_display *display;
+	struct dsi_panel *panel;
+	bool status;
+
+	display = dev_get_drvdata(dev);
+	if (!display) {
+		pr_err("Invalid display\n");
+		return -EINVAL;
+	}
+
+	panel = display->panel;
+
+	mutex_lock(&panel->panel_lock);
+	status = panel->dimlayer_exposure;
+	mutex_unlock(&panel->panel_lock);
+
+	return snprintf(buf, PAGE_SIZE, "%d\n", status);
+}
+
+static ssize_t sysfs_dimlayer_exposure_write(struct device *dev,
+	struct device_attribute *attr, const char *buf, size_t count)
+{
+	struct dsi_display *display;
+	struct dsi_panel *panel;
+	struct drm_connector *connector = NULL;
+	bool status;
+	int rc = 0;
+
+	display = dev_get_drvdata(dev);
+	if (!display) {
+		pr_err("Invalid display\n");
+		return -EINVAL;
+	}
+
+	rc = kstrtobool(buf, &status);
+	if (rc) {
+		pr_err("%s: kstrtobool failed. rc=%d\n", __func__, rc);
+		return rc;
+	}
+
+	panel = display->panel;
+
+	panel->dimlayer_exposure = status;
+	dsi_display_set_backlight(connector, display, panel->bl_config.bl_level);
+
+	return count;
+}
+#endif
+
+#ifdef CONFIG_DRM_SDE_EXPO
+static DEVICE_ATTR(dimlayer_exposure, 0644,
+			sysfs_dimlayer_exposure_read,
+			sysfs_dimlayer_exposure_write);
+#endif
+
+static struct attribute *display_fs_attrs[] = {
+	&dev_attr_hbm.attr,
+#ifdef CONFIG_DRM_SDE_EXPO
+	&dev_attr_dimlayer_exposure.attr,
+#endif
+	NULL,
+};
+static struct attribute_group display_fs_attrs_group = {
+	.attrs = display_fs_attrs,
+};
+
 static int dsi_display_sysfs_init(struct dsi_display *display)
 {
 	int rc = 0;
@@ -5306,7 +5446,11 @@ static int dsi_display_bind(struct device *dev,
 		goto error;
 	}
 
-	dsi_display_debugfs_init(display);
+	rc = dsi_display_debugfs_init(display);
+	if (rc) {
+		pr_err("[%s] debugfs init failed, rc=%d\n", display->name, rc);
+		goto error;
+	}
 
 	atomic_set(&display->clkrate_change_pending, 0);
 	display->cached_clk_rate = 0;
@@ -5702,6 +5846,10 @@ int dsi_display_dev_remove(struct platform_device *pdev)
 	}
 
 	display = platform_get_drvdata(pdev);
+	if (!display || !display->disp_node) {
+		pr_err("invalid display\n");
+		return -EINVAL;
+	}
 
 	/* decrement ref count */
 	of_node_put(display->disp_node);
@@ -6879,6 +7027,7 @@ int dsi_display_set_mode(struct dsi_display *display,
 {
 	int rc = 0;
 	struct dsi_display_mode adj_mode;
+	struct dsi_mode_info timing;
 
 	if (!display || !mode || !display->panel) {
 		pr_err("Invalid params\n");
@@ -6888,6 +7037,7 @@ int dsi_display_set_mode(struct dsi_display *display,
 	mutex_lock(&display->display_lock);
 
 	adj_mode = *mode;
+	timing = adj_mode.timing;
 	adjust_timing_by_ctrl_count(display, &adj_mode);
 
 	/*For dynamic DSI setting, use specified clock rate */
@@ -6914,6 +7064,11 @@ int dsi_display_set_mode(struct dsi_display *display,
 			goto error;
 		}
 	}
+
+	pr_info("mdp_transfer_time_us=%d us\n",
+			adj_mode.priv_info->mdp_transfer_time_us);
+	pr_info("hactive= %d, vactive= %d, fps=%d", timing.h_active,
+			timing.v_active, timing.refresh_rate);
 
 	memcpy(display->panel->cur_mode, &adj_mode, sizeof(adj_mode));
 error:
@@ -7107,7 +7262,7 @@ static void dsi_display_handle_fifo_overflow(struct work_struct *work)
 	 * Add sufficient delay to make sure
 	 * pixel transmission has started
 	 */
-	udelay(200);
+	usleep_range(190, 210);
 end:
 	dsi_display_clk_ctrl(display->dsi_clk_handle,
 			DSI_ALL_CLKS, DSI_CLK_OFF);
@@ -7776,8 +7931,8 @@ int dsi_display_enable(struct dsi_display *display)
 	mutex_lock(&display->display_lock);
 
 	mode = display->panel->cur_mode;
-	WRITE_ONCE(cur_refresh_rate, mode->timing.refresh_rate);
-
+WRITE_ONCE(cur_refresh_rate, mode->timing.refresh_rate);
+	
 	if (mode->dsi_mode_flags & DSI_MODE_FLAG_DMS) {
 		rc = dsi_panel_post_switch(display->panel);
 		if (rc) {
@@ -8067,6 +8222,10 @@ int dsi_display_esd_irq_ctrl(struct dsi_display *display,
 	mutex_unlock(&display->display_lock);
 
 	return ret;
+}
+
+struct dsi_display *get_main_display(void) {
+	return primary_display;
 }
 
 static int __init dsi_display_register(void)
