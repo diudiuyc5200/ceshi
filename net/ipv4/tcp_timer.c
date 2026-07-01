@@ -24,13 +24,45 @@
 
 int sysctl_tcp_thin_linear_timeouts __read_mostly;
 
+static void set_tcp_default(void)
+{
+	sysctl_tcp_delack_seg = TCP_DELACK_SEG;
+}
+
+/*sysctl handler for tcp_ack realted master control */
+int tcp_proc_delayed_ack_control(struct ctl_table *table, int write,
+				 void __user *buffer, size_t *length,
+				 loff_t *ppos)
+{
+	int ret = proc_dointvec_minmax(table, write, buffer, length, ppos);
+
+	/* The ret value will be 0 if the input validation is successful
+	 * and the values are written to sysctl table. If not, the stack
+	 * will continue to work with currently configured values
+	 */
+	return ret;
+}
+
+/*sysctl handler for tcp_ack realted master control */
+int tcp_use_userconfig_sysctl_handler(struct ctl_table *table, int write,
+				      void __user *buffer, size_t *length,
+				      loff_t *ppos)
+{
+	int ret = proc_dointvec_minmax(table, write, buffer, length, ppos);
+
+	if (write && ret == 0) {
+		if (!sysctl_tcp_use_userconfig)
+			set_tcp_default();
+	}
+	return ret;
+}
+
 /**
  *  tcp_write_err() - close socket and save error info
  *  @sk:  The socket the error has appeared on.
  *
  *  Returns: Nothing (void)
  */
-
 static void tcp_write_err(struct sock *sk)
 {
 	sk->sk_err = sk->sk_err_soft ? : ETIMEDOUT;
@@ -401,13 +433,8 @@ static bool tcp_rtx_probe0_timed_out(const struct sock *sk,
 {
 	const struct tcp_sock *tp = tcp_sk(sk);
 	const int timeout = TCP_RTO_MAX * 2;
-	u32 rtx_delta;
-	s32 rcv_delta;
+	u32 rcv_delta, rtx_delta;
 
-	/* Note: timer interrupt might have been delayed by at least one jiffy,
-	 * and tp->rcv_tstamp might very well have been written recently.
-	 * rcv_delta can thus be negative.
-	 */
 	rcv_delta = inet_csk(sk)->icsk_timeout - tp->rcv_tstamp;
 	if (rcv_delta <= timeout)
 		return false;
@@ -452,6 +479,8 @@ void tcp_retransmit_timer(struct sock *sk)
 	skb = tcp_rtx_queue_head(sk);
 	if (WARN_ON_ONCE(!skb))
 		return;
+
+	tp->tlp_high_seq = 0;
 
 	if (!tp->snd_wnd && !sock_flag(sk, SOCK_DEAD) &&
 	    !((1 << sk->sk_state) & (TCPF_SYN_SENT | TCPF_SYN_RECV))) {

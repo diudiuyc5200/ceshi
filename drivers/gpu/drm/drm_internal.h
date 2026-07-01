@@ -26,6 +26,8 @@
 
 /* drm_file.c */
 extern struct mutex drm_global_mutex;
+struct drm_file *drm_file_alloc(struct drm_minor *minor);
+void drm_file_free(struct drm_file *file);
 void drm_lastclose(struct drm_device *dev);
 
 /* drm_pci.c */
@@ -82,7 +84,8 @@ int drm_dropmaster_ioctl(struct drm_device *dev, void *data,
 			 struct drm_file *file_priv);
 int drm_master_open(struct drm_file *file_priv);
 void drm_master_release(struct drm_file *file_priv);
-
+bool drm_master_internal_acquire(struct drm_device *dev);
+void drm_master_internal_release(struct drm_device *dev);
 /* drm_sysfs.c */
 extern struct class *drm_class;
 
@@ -173,3 +176,8 @@ int drm_syncobj_reset_ioctl(struct drm_device *dev, void *data,
 			    struct drm_file *file_private);
 int drm_syncobj_signal_ioctl(struct drm_device *dev, void *data,
 			     struct drm_file *file_private);
+
+ssize_t dsi_display_mipi_reg_write(struct drm_connector *connector,
+								 char *buf, size_t count);
+ssize_t dsi_display_mipi_reg_read(struct drm_connector *connector,
+								 char *buf);

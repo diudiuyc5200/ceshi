@@ -43,6 +43,7 @@ struct ipv6_devconf {
 	__s32		accept_ra_rt_info_max_plen;
 #endif
 #endif
+	__s32		accept_ra_rt_table;
 	__s32		proxy_ndp;
 	__s32		accept_source_route;
 	__s32		accept_ra_from_local;
@@ -74,7 +75,7 @@ struct ipv6_devconf {
 	__u32		enhanced_dad;
 	__u32		addr_gen_mode;
 	__s32		disable_policy;
-
+	__s32		accept_ra_prefix_route;
 	struct ctl_table_header *sysctl_header;
 };
 

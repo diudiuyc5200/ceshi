@@ -126,15 +126,6 @@ enum pci_interrupt_pin {
 #define PCI_NUM_INTX	4
 
 /*
- * Reading from a device that doesn't respond typically returns ~0.  A
- * successful read from a device may also return ~0, so you need additional
- * information to reliably identify errors.
- */
-#define PCI_ERROR_RESPONSE		(~0ULL)
-#define PCI_SET_ERROR_RESPONSE(val)	(*(val) = ((typeof(*(val))) PCI_ERROR_RESPONSE))
-#define PCI_POSSIBLE_ERROR(val)		((val) == ((typeof(val)) PCI_ERROR_RESPONSE))
-
-/*
  * pci_power_t values must match the bits in the Capabilities PME_Support
  * and Control/Status PowerState fields in the Power Management capability.
  */
@@ -346,6 +337,7 @@ struct pci_dev {
 	unsigned int	d2_support:1;	/* Low power state D2 is supported */
 	unsigned int	no_d1d2:1;	/* D1 and D2 are forbidden */
 	unsigned int	no_d3cold:1;	/* D3cold is forbidden */
+	unsigned int	no_d3hot:1;	/* D3hot is forbidden */
 	unsigned int	bridge_d3:1;	/* Allow D3 for bridge */
 	unsigned int	d3cold_allowed:1;	/* D3cold is allowed by user */
 	unsigned int	mmio_always_on:1;	/* disallow turning off io/mem

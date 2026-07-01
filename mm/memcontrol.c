@@ -1516,28 +1516,53 @@ static void memcg_oom_recover(struct mem_cgroup *memcg)
 		__wake_up(&memcg_oom_waitq, TASK_NORMAL, 0, memcg);
 }
 
-static void mem_cgroup_oom(struct mem_cgroup *memcg, gfp_t mask, int order)
+enum oom_status {
+	OOM_SUCCESS,
+	OOM_FAILED,
+	OOM_ASYNC,
+	OOM_SKIPPED
+};
+
+static enum oom_status mem_cgroup_oom(struct mem_cgroup *memcg, gfp_t mask, int order)
 {
-	if (!current->memcg_may_oom)
-		return;
+	if (order > PAGE_ALLOC_COSTLY_ORDER)
+		return OOM_SKIPPED;
+
 	/*
 	 * We are in the middle of the charge context here, so we
 	 * don't want to block when potentially sitting on a callstack
 	 * that holds all kinds of filesystem and mm locks.
 	 *
-	 * Also, the caller may handle a failed allocation gracefully
-	 * (like optional page cache readahead) and so an OOM killer
-	 * invocation might not even be necessary.
+	 * cgroup1 allows disabling the OOM killer and waiting for outside
+	 * handling until the charge can succeed; remember the context and put
+	 * the task to sleep at the end of the page fault when all locks are
+	 * released.
 	 *
-	 * That's why we don't do anything here except remember the
-	 * OOM context and then deal with it at the end of the page
-	 * fault when the stack is unwound, the locks are released,
-	 * and when we know whether the fault was overall successful.
+	 * On the other hand, in-kernel OOM killer allows for an async victim
+	 * memory reclaim (oom_reaper) and that means that we are not solely
+	 * relying on the oom victim to make a forward progress and we can
+	 * invoke the oom killer here.
+	 *
+	 * Please note that mem_cgroup_out_of_memory might fail to find a
+	 * victim and then we have to bail out from the charge path.
 	 */
-	css_get(&memcg->css);
-	current->memcg_in_oom = memcg;
-	current->memcg_oom_gfp_mask = mask;
-	current->memcg_oom_order = order;
+	if (memcg->oom_kill_disable) {
+		if (!current->in_user_fault)
+			return OOM_SKIPPED;
+		css_get(&memcg->css);
+		current->memcg_in_oom = memcg;
+		current->memcg_oom_gfp_mask = mask;
+		current->memcg_oom_order = order;
+
+		return OOM_ASYNC;
+	}
+
+	if (mem_cgroup_out_of_memory(memcg, mask, order))
+		return OOM_SUCCESS;
+
+	WARN(1,"Memory cgroup charge failed because of no reclaimable memory! "
+		"This looks like a misconfiguration or a kernel bug.");
+	return OOM_FAILED;
 }
 
 /**
@@ -1747,9 +1772,6 @@ static void drain_stock(struct memcg_stock_pcp *stock)
 {
 	struct mem_cgroup *old = stock->cached;
 
-	if (!old)
-		return;
-
 	if (stock->nr_pages) {
 		page_counter_uncharge(&old->memory, stock->nr_pages);
 		if (do_memsw_account())
@@ -1757,8 +1779,6 @@ static void drain_stock(struct memcg_stock_pcp *stock)
 		css_put_many(&old->css, stock->nr_pages);
 		stock->nr_pages = 0;
 	}
-
-	css_put(&old->css);
 	stock->cached = NULL;
 }
 
@@ -1794,7 +1814,6 @@ static void refill_stock(struct mem_cgroup *memcg, unsigned int nr_pages)
 	stock = this_cpu_ptr(&memcg_stock);
 	if (stock->cached != memcg) { /* reset if necessary */
 		drain_stock(stock);
-		css_get(&memcg->css);
 		stock->cached = memcg;
 	}
 	stock->nr_pages += nr_pages;
@@ -1826,22 +1845,21 @@ static void drain_all_stock(struct mem_cgroup *root_memcg)
 	for_each_online_cpu(cpu) {
 		struct memcg_stock_pcp *stock = &per_cpu(memcg_stock, cpu);
 		struct mem_cgroup *memcg;
-		bool flush = false;
 
-		rcu_read_lock();
 		memcg = stock->cached;
-		if (memcg && stock->nr_pages &&
-		    mem_cgroup_is_descendant(memcg, root_memcg))
-			flush = true;
-		rcu_read_unlock();
-
-		if (flush &&
-		    !test_and_set_bit(FLUSHING_CACHED_CHARGE, &stock->flags)) {
+		if (!memcg || !stock->nr_pages || !css_tryget(&memcg->css))
+			continue;
+		if (!mem_cgroup_is_descendant(memcg, root_memcg)) {
+			css_put(&memcg->css);
+			continue;
+		}
+		if (!test_and_set_bit(FLUSHING_CACHED_CHARGE, &stock->flags)) {
 			if (cpu == curcpu)
 				drain_local_stock(&stock->work);
 			else
 				schedule_work_on(cpu, &stock->work);
 		}
+		css_put(&memcg->css);
 	}
 	put_cpu();
 	mutex_unlock(&percpu_charge_mutex);
@@ -1939,6 +1957,8 @@ static int try_charge(struct mem_cgroup *memcg, gfp_t gfp_mask,
 	unsigned long nr_reclaimed;
 	bool may_swap = true;
 	bool drained = false;
+	bool oomed = false;
+	enum oom_status oom_status;
 
 	if (mem_cgroup_is_root(memcg))
 		return 0;
@@ -2026,6 +2046,9 @@ retry:
 	if (nr_retries--)
 		goto retry;
 
+	if (gfp_mask & __GFP_RETRY_MAYFAIL && oomed)
+		goto nomem;
+
 	if (gfp_mask & __GFP_NOFAIL)
 		goto force;
 
@@ -2034,8 +2057,23 @@ retry:
 
 	memcg_memory_event(mem_over_limit, MEMCG_OOM);
 
-	mem_cgroup_oom(mem_over_limit, gfp_mask,
+	/*
+	 * keep retrying as long as the memcg oom killer is able to make
+	 * a forward progress or bypass the charge if the oom killer
+	 * couldn't make any progress.
+	 */
+	oom_status = mem_cgroup_oom(mem_over_limit, gfp_mask,
 		       get_order(nr_pages * PAGE_SIZE));
+	switch (oom_status) {
+	case OOM_SUCCESS:
+		nr_retries = MEM_CGROUP_RECLAIM_RETRIES;
+		oomed = true;
+		goto retry;
+	case OOM_FAILED:
+		goto force;
+	default:
+		goto nomem;
+	}
 nomem:
 	if (!(gfp_mask & __GFP_NOFAIL))
 		return -ENOMEM;

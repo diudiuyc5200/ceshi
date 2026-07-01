@@ -342,7 +342,7 @@ nla_put_failure:
 #define ctnetlink_dump_secctx(a, b) (0)
 #endif
 
-#ifdef CONFIG_NF_CONNTRACK_EVENTS
+#ifdef CONFIG_NF_CONNTRACK_LABELS
 static inline int ctnetlink_label_size(const struct nf_conn *ct)
 {
 	struct nf_conn_labels *labels = nf_ct_labels_find(ct);
@@ -351,7 +351,6 @@ static inline int ctnetlink_label_size(const struct nf_conn *ct)
 		return 0;
 	return nla_total_size(sizeof(labels->bits));
 }
-#endif
 
 static int
 ctnetlink_dump_labels(struct sk_buff *skb, const struct nf_conn *ct)
@@ -372,6 +371,10 @@ ctnetlink_dump_labels(struct sk_buff *skb, const struct nf_conn *ct)
 
 	return 0;
 }
+#else
+#define ctnetlink_dump_labels(a, b) (0)
+#define ctnetlink_label_size(a)	(0)
+#endif
 
 #define master_tuple(ct) &(ct->master->tuplehash[IP_CT_DIR_ORIGINAL].tuple)
 
@@ -729,6 +732,10 @@ ctnetlink_conntrack_event(unsigned int events, struct nf_ct_event *item)
 
 		if (events & (1 << IPCT_SEQADJ) &&
 		    ctnetlink_dump_ct_seq_adj(skb, ct) < 0)
+			goto nla_put_failure;
+
+		if (events & (1 << IPCT_COUNTER) &&
+		    ctnetlink_dump_acct(skb, ct, 0) < 0)
 			goto nla_put_failure;
 	}
 
@@ -1575,12 +1582,23 @@ static int ctnetlink_change_timeout(struct nf_conn *ct,
 				    const struct nlattr * const cda[])
 {
 	u_int32_t timeout = ntohl(nla_get_be32(cda[CTA_TIMEOUT]));
+#if defined(CONFIG_IP_NF_TARGET_NATTYPE_MODULE)
+	bool (*nattype_ref_timer)
+		(unsigned long nattype,
+		unsigned long timeout_value);
+#endif
 
 	ct->timeout = nfct_time_stamp + timeout * HZ;
 
 	if (test_bit(IPS_DYING_BIT, &ct->status))
 		return -ETIME;
 
+/* Refresh the NAT type entry. */
+#if defined(CONFIG_IP_NF_TARGET_NATTYPE_MODULE)
+	nattype_ref_timer = rcu_dereference(nattype_refresh_timer);
+	if (nattype_ref_timer)
+		nattype_ref_timer(ct->nattype_entry, ct->timeout);
+#endif
 	return 0;
 }
 
@@ -2983,8 +3001,7 @@ static int ctnetlink_del_expect(struct net *net, struct sock *ctnl,
 
 		if (cda[CTA_EXPECT_ID]) {
 			__be32 id = nla_get_be32(cda[CTA_EXPECT_ID]);
-
-			if (id != nf_expect_get_id(exp)) {
+			if (ntohl(id) != (u32)(unsigned long)exp) {
 				nf_ct_expect_put(exp);
 				return -ENOENT;
 			}

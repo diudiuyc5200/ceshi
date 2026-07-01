@@ -869,6 +869,10 @@ COMPATIBLE_IOCTL(TIOCCBRK)
 COMPATIBLE_IOCTL(TIOCGSID)
 COMPATIBLE_IOCTL(TIOCGICOUNT)
 COMPATIBLE_IOCTL(TIOCGEXCL)
+/*UART CLOCK*/
+COMPATIBLE_IOCTL(TIOCPMGET)
+COMPATIBLE_IOCTL(TIOCPMPUT)
+COMPATIBLE_IOCTL(TIOCPMACT)
 /* Little t */
 COMPATIBLE_IOCTL(TIOCGETD)
 COMPATIBLE_IOCTL(TIOCSETD)
@@ -1546,7 +1550,8 @@ COMPAT_SYSCALL_DEFINE3(ioctl, unsigned int, fd, unsigned int, cmd,
 	if (!f.file)
 		goto out;
 
-	error = security_file_ioctl_compat(f.file, cmd, arg);
+	/* RED-PEN how should LSM module know it's handling 32bit? */
+	error = security_file_ioctl(f.file, cmd, arg);
 	if (error)
 		goto out_fput;
 
