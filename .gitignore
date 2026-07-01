@@ -104,7 +104,6 @@ GTAGS
 # id-utils files
 ID
 
-*.orig
 *~
 \#*#
 
@@ -122,11 +121,3 @@ all.config
 
 # Kdevelop4
 *.kdev4
-
-# fetched Android config fragments
-kernel/configs/android-*.cfg
-
-#
-#Ignoring Android.bp link file
-#
-Android.bp

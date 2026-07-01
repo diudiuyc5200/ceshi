@@ -330,8 +330,7 @@ int sysfs_add_file(struct kernfs_node *parent, const struct attribute *attr,
 int sysfs_create_file_ns(struct kobject *kobj, const struct attribute *attr,
 			 const void *ns)
 {
-	if (WARN_ON(!kobj || !kobj->sd || !attr))
-		return -EINVAL;
+	BUG_ON(!kobj || !kobj->sd || !attr);
 
 	return sysfs_add_file_mode_ns(kobj->sd, attr, false, attr->mode, ns);
 
@@ -428,6 +427,8 @@ struct kernfs_node *sysfs_break_active_protection(struct kobject *kobj,
 	kn = kernfs_find_and_get(kobj->sd, attr->name);
 	if (kn)
 		kernfs_break_active_protection(kn);
+	else
+		kobject_put(kobj);
 	return kn;
 }
 EXPORT_SYMBOL_GPL(sysfs_break_active_protection);
@@ -534,8 +535,7 @@ EXPORT_SYMBOL_GPL(sysfs_remove_file_from_group);
 int sysfs_create_bin_file(struct kobject *kobj,
 			  const struct bin_attribute *attr)
 {
-	if (WARN_ON(!kobj || !kobj->sd || !attr))
-		return -EINVAL;
+	BUG_ON(!kobj || !kobj->sd || !attr);
 
 	return sysfs_add_file(kobj->sd, &attr->attr, true);
 }
